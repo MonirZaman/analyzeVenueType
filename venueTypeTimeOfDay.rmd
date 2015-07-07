@@ -1,0 +1,260 @@
+---
+title: "Where people are at different time of the day"
+author: "Monir Zaman"
+date: "Sunday, July 05, 2015"
+output: html_document
+---
+
+I analyze a foursquare dataset [1] in this post. <a href=https://foursquare.com>foursquare</a> is a social network where people can disclose their location realtime to their friends. They use the feature called check-in to record their location. The objective of this post is to find out what type of locations people check-in to over the course of a day. For example, we may find out that Coffee shops are visited mostly at around 11am.   
+
+You can download the dataset from this <a href=https://drive.google.com/open?id=0B28H8IpKzp1KdzRRdmYtYnNhNzA> link</a>. Here is a snapshot of the dataset:
+```{r}
+load("gao4square.rdata")
+head(df)
+```
+
+df is the data frame variable that contains the entire dataset. Fields time and category will be used in this analysis. category denotes the type of the checked-in location. tier1Category is a more general type. For example, category for Starbucks is Coffee Shop and tier1Category of the same location is Food. Note that the original dataset did not contain either category or tier1Category information. I wrote a crawler in Python that queried foursquare venue search API with the location's longitude and latitude information and obtained the category information. 
+
+Let's plot a histogram for some of the highly frequent categories. 
+
+```{r}
+plotTopCategory=function(adf,topN=30){
+  #table function computes frequencies for each category  
+  catFreq=sort(table(adf$category),decreasing=F)
+    
+  library(reshape2)
+  #converting table object to a dataframe with fields: category, frequency
+  mCatFreq=melt(catFreq)
+  names(mCatFreq)=c("category","frequency")
+  
+  #plotting
+  library(ggplot2)
+  rn=nrow(mCatFreq)
+  print(ggplot(data=mCatFreq[(rn-topN+1):rn,],aes(x=category,y=frequency))+geom_bar(stat="identity",fill="gray73",col="black")+coord_flip())
+  
+  #returning topN categories in terms of frequencies
+  return (mCatFreq[(rn-topN+1):rn,"category"])
+}
+
+retV=plotTopCategory(df)
+```
+
+If you closely look at the categories, you will find repetition and inconsistencies. For example, {Supermarket, Grocery Store} are basically the same type but are being treated separately because of the different names. There are also other types with the same problem. We need to resolve these types into one. This step is called Entity resolution.
+
+<h4> Entity resolution for category</h4>
+
+After careful inspection, I have put together a table of duplicate categories that should be merged. We refer to it as entity resolution table (er). It is available at this <a href=https://drive.google.com/open?id=0B28H8IpKzp1KdzRRdmYtYnNhNzA> link</a>. Here is a look at the table:
+
+```{r}
+er=read.csv("erData.csv")
+head(er)
+```
+
+In the column Categories, School:University:College Academic Building is the list of duplicate categories that are separated by colon and will be merged into one category - School. Same idea applies to other entries.
+
+For the convenience of editing and searching categories, we perform the following transformations.
+```{r}
+#converting from factor to character in order to edit them later
+er$Categories=as.character(er$Categories)
+er$resolvedCategory=as.character(er$resolvedCategory)
+    
+#make a copy of the main dataset & sort it based on category
+rdf=df[with(df,order(category)),]
+rdf$category=as.character(rdf$category)
+```
+
+What we want to do is to search for duplicate entries in the dataset rdf and merge the duplicate entries once found. Note that rdf is a sorted copy of the dataset df. Since the dataset has over 2 million records, a brute force look up will take significant time. Therefore, we will use Binary search algorithm to speed up the search.
+
+```{r}
+#BinarySearch: Find the index of the first appearence of key in lst
+bsLeft=function(lst, key){
+  beg=1
+  end=length(lst)
+  
+  while(beg<end-1){
+    mid=as.integer((beg+end)/2)
+    if(lst[mid]>=key){
+      end=mid
+    }else{
+      beg=mid
+    }
+  }
+    
+  if(lst[beg]==key){
+    return (beg)
+  }else{
+    return (end)
+  }
+}
+
+#test code for bsLeft
+stopifnot(bsLeft(list("Airport","Airport","Field","Field","Field","Food","Food"), "Airport")==1)
+stopifnot(bsLeft(list("Airport","Airport","Field","Field","Field","Food","Food"), "Field")==3)
+stopifnot(bsLeft(list("Airport","Airport","Field","Field","Field","Food","Food"), "Food")==6)
+  
+#BinarySearch: Find the index of the last appearence of key in lst
+bsRight=function(lst, key){
+  beg=1
+  end=length(lst)
+  
+  while(beg<end-1){
+    mid=as.integer((beg+end)/2)
+    if(lst[mid]<=key){
+      beg=mid
+    }else{
+      end=mid
+    }
+  }
+  
+  if(lst[end]==key){
+    return (end)
+  }else{
+    return (beg)
+  }
+}
+  
+#test code
+stopifnot(bsRight(list("Airport","Airport","Field","Field","Field","Food","Food"), "Airport")==2)
+stopifnot(bsRight(list("Airport","Airport","Field","Field","Field","Food","Food"), "Field")==5)
+stopifnot(bsRight(list("Airport","Airport","Field","Field","Field","Food","Food"), "Food")==7)
+```
+
+Both bsLeft and bsRight are variant of Binary search. bsLeft returns the first occurence of an item (aka key) in an input list while bsRight returns the last occurence of the item. For example, when we look for "Field" in the list("Airport","Airport","Field","Field","Field","Food","Food"), bsLeft will return 3 and bsRight will return 5. Note that indexing in R starts from 1 instead of 0. Also, the input list must be sorted as required by Binary search. This is the reason we sorted rdf based on category. 
+
+```{r}
+debugFlag=F
+
+#entity resolution for each element in the entity table er
+for(i in 1:nrow(er)){
+  
+  #splitting the element based on colon and iterate over the splitted terms
+  for(akey in unlist(strsplit(as.character(er[i,"Categories"]),split=":"))){
+        
+    firstIndx=bsLeft(rdf$category,akey)
+    lastIndx=bsRight(rdf$category,akey)
+                
+    if(debugFlag){
+      print(paste("key ",akey))
+      print(paste("firstIndx ",firstIndx))
+      print(paste("lastIndx ",lastIndx))
+    }
+        
+    #resolve the key
+    rdf[firstIndx:lastIndx,"category"]=er[i,"resolvedCategory"]
+  }
+}
+    
+#test code
+stopifnot(nrow(df[df$category=="Coffee Shop",])+nrow(df[df$category=="Café",])==nrow(rdf[rdf$category=="Coffee Shop",]))
+
+```
+In the code block above, we write a for loop that goes through each entry in the er[Categories] and split the entry by colon to get individual category. Together all these categories mean the same type. Nested in the previous loop, we iterate over each individual category and find its first and last occurence in the dataset. Next, we change the category of all entries between the first and the last occurence in the dataset to the resolved category found from the field er[resolvedCategory]. Now we will plot the highly frequent categories again.
+
+```{r}
+highFreqCategory=plotTopCategory(rdf)
+```
+
+<h4>Factoring by time of the day</h4>
+We are now closer to our objective of exploring what type of location people visit over the course of a day. But first, we do some essential preprocessing. 
+
+```{r}
+#filter away less frequent category and create a new copy of the dataset
+hdf=rdf[rdf$category %in% highFreqCategory,]
+  
+#split the field time that contains date and time of the day separated by space
+tdStr=data.frame(do.call("rbind",strsplit(as.character(hdf$time),split=" ")))
+stopifnot(nrow(tdStr)==nrow(hdf))
+#now include time of day (as field timePoints) in the dataset
+hdf$timePoints=tdStr$X2 #keeping only time of the day
+#add another field containing time of day as POSIXlt objects
+hdf$timePointsObj=strptime(tdStr$X2,format="%H:%M:%S")
+
+#sort the records by category and timePoints
+prow=nrow(hdf)
+hdf=hdf[with(hdf,order(category,timePoints)),]
+stopifnot(nrow(hdf)==prow)
+```
+
+There are several hundreds of unique categories in the dataset. We cannot include all of them in the graph. So we limit the categories to the top 30 in terms of the number of check-ins. These categories are contained in the list highFreqCategory which was returned as an output by the function plotTopCategory. We also split the date and time of the day (aka timePoints) from the field time and convert the time of the day into POSIXlt objects so that R treats them as temporal information. Another important transformation that we do is to sort hdf which is the copy of the dataset containing only highly frequent categories and their records. We sort it by category first and then by time of the day (timePoints). Eventually, we want to present categories sorted by their median check-in time of the day. So, we need to find the median check-in time.
+
+```{r}
+#---finding median timePoints for each hdf$category
+
+#cat contains distinct category names
+cat=unique(hdf$category)
+catLen=length(cat)
+
+#creating an empty data frame
+catMedian=data.frame("category"=c(),"median"=c())
+
+#iterating over each category
+for(i in 1:catLen){
+  acat=cat[i]
+  firstIndx=bsLeft(hdf$category,acat)
+  lastIndx=bsRight(hdf$category,acat)
+  offset=as.integer((lastIndx-firstIndx)/2)
+  medianTimePoint=hdf[(firstIndx+offset),"timePoints"]
+  
+  #saving the median in the data frame
+  catMedian=rbind(catMedian,data.frame("category"=acat,"median"=medianTimePoint))
+}
+  
+#test code:finding median
+set.seed(98112311)
+testCat=cat[sample(1:catLen,1)]
+acatDf=hdf[hdf$category==testCat,]
+acatDf=acatDf[with(acatDf,order(timePoints)),]
+if(debugFlag){
+  print(testCat)
+  print(catMedian[catMedian$category==testCat,"median"])
+  print(acatDf[as.integer(nrow(acatDf)/2),"timePoints"])
+}
+stopifnot(catMedian[catMedian$category==testCat,"median"]==acatDf[as.integer(nrow(acatDf)/2),"timePoints"])
+#end of test code
+
+#sort category by their median time of the day
+catMedian=catMedian[order(catMedian$median),]
+#reorder category in the dataset hdf based on the order of the median
+hdf$category=factor(hdf$category,labels=catMedian$category,levels=catMedian$category)
+#visualization library ggplot will respect this ordering when generating the graph
+
+```
+In the for loop above, we iterate over the categories and for each category, we find its first and last appearance in the dataset hdf and take median entry between the first and last appearance. We compute median index as firstIndx+as.integer((lastIndx-firstIndx)/2). By taking an integer division, we loose some precision (usually, in the order of a second) when the number of entries from the first to the last appearence is an even number. However, it also allowed us to avoid arithmetic and factoring (later on) involving POSIXlt objects. At the same time, it is close enough for visualization. We then store categories and their respective median in the catMedian data frame that is sorted by the median.
+We use the factor function to impose an ordering in the hdf$category using the ordering of the catMedian data frame. Visualization library will use this ordering to place categories in the graph.
+
+```{r}
+#formatTime function was inspired by a blog post [2]
+#the function computes label for time of the day (Y axis lables)
+formatTime = function(since) {
+  function(x) {
+    dt<-as.numeric(difftime(x, since, units="secs"))
+    hr=as.integer(dt/3600)
+    rem=dt%%3600
+    
+    mn=as.integer(rem/60)
+    sc=as.integer(rem%%60)
+    
+    sprintf("%02d:%02d", hr,mn)
+  }
+}
+
+#a base POSIXlt object used by formatTime
+sinceDate=strptime("00:00:00",format="%H:%M:%S")
+
+#plotting the graph
+library(ggplot2)
+tier2g=ggplot(data=hdf,aes(x=category,y=timePointsObj))+geom_boxplot()+coord_flip()
+tier2g=tier2g+scale_y_datetime(labels = formatTime(sinceDate), breaks = "3 hour")+ylab("Time of Day")+xlab("category")
+tier2g
+```
+
+The figure above is a box-whisker plot that shows how check-ins are distributed for a given location category over different times of the day. For example, half of the check-ins that take place at Convenience Store happens later in the day and at night i.e., at around 4pm or afterwards. On the other hand, median check-in time at Bar is Noon with half of the check-ins taking place before Noon and the remaining half taking place after Noon. 
+
+We can see a few check-ins take place at offices in the mid night and very early in the morning when the offices are most likely to be closed. This is an issue that can explored further. We can remove the outlier check-in times that falls outside the 95-99% confidence interval for a given location category. 
+
+I hope this analysis will shed insights for any predictive analytics that you may perform with the foursquare dataset. If you have any questions or thoughts, feel free to send me an email at {ucalgaryDOTca, mmoniruzAT}.
+<h4>Reference</h4>
+[1] foursquare dataset source: H. Gao, J. Tang, and H. Liu. gscorr: Modeling geo-social correlations for new check-ins on location-based social networks. In Proceedings of the 21st ACM international conference on Information and knowledge management, pages 1582-1586. ACM, 2012.
+
+[2] formatTime source: http://www.widecodes.com/0ixWjeVqXe/change-part-of-time-x-axis-labels-in-ggplot.html
+
