@@ -123,6 +123,8 @@ Both bsLeft and bsRight are variant of Binary search. bsLeft returns the first o
 
 ```{r}
 debugFlag=F
+#making a copy of the category which is used by the search routine;
+readOnlyCategory=rdf$category
 
 #entity resolution for each element in the entity table er
 for(i in 1:nrow(er)){
@@ -130,8 +132,8 @@ for(i in 1:nrow(er)){
   #splitting the element based on colon and iterate over the splitted terms
   for(akey in unlist(strsplit(as.character(er[i,"Categories"]),split=":"))){
         
-    firstIndx=bsLeft(rdf$category,akey)
-    lastIndx=bsRight(rdf$category,akey)
+    firstIndx=bsLeft(readOnlyCategory,akey)
+    lastIndx=bsRight(readOnlyCategory,akey)
                 
     if(debugFlag){
       print(paste("key ",akey))
