@@ -1,6 +1,6 @@
 # venueTypeTimeOfDay.rmd
 
-This blog post (R markdown file) is written on a foursquare dataset analysis. foursquare is a social network where people
+This blog post (R markdown file) is written on a foursquare dataset analysis. <a href="https://foursquare.com/">foursquare</a> is a social network where people
 can disclose their location realtime to their friends. They use the feature called check-in to record their location. 
 The objective of this post is to find out what type of locations people check-in to over the course of a day.
 
